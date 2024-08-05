@@ -109,7 +109,7 @@ func handleConnection(con net.Conn, serialBuffer chan []byte) {
 			connectedClients -= 1
 			return
 		} else if err != nil {
-			fmt.Printf("[%s] Read error: %s", con.RemoteAddr().String(), err)
+			fmt.Printf("[%s] Read error: %s\n", con.RemoteAddr().String(), err)
 			connectedClients -= 1
 			return
 		}
@@ -135,7 +135,7 @@ func serialFlush(serial serial.Port, sendBuffer chan []byte, done chan bool) {
 		case msg := <-sendBuffer:
 			_, err := serial.Write(msg)
 			if err != nil {
-				log.Printf("Error forwarding data from serial to TCP: %v", err)
+				log.Printf("Error forwarding data from serial to TCP: %v\n", err)
 			}
 		case <-done:
 			return
