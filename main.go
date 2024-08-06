@@ -8,9 +8,14 @@ import (
 	"net"
 	"time"
 
-	"go.bug.st/serial.v1"
+	"go.bug.st/serial"
 	"go.bug.st/serial/enumerator"
 )
+
+type CommandToSerial struct {
+	message      []byte
+	responseChan chan []byte
+}
 
 var (
 	selectedPort string
@@ -42,6 +47,8 @@ func startServer() {
 	if err != nil {
 		log.Fatalf("Failed to open serial port: %v", err)
 	}
+
+	serialPort.SetReadTimeout(300 * time.Millisecond)
 	defer serialPort.Close()
 
 	log.Printf("Opened serial port %s\n", selectedPort)
@@ -53,10 +60,10 @@ func startServer() {
 	}
 	defer listener.Close()
 
-	serialBuffer := make(chan []byte, 4)
+	serialSend := make(chan CommandToSerial, 4)
 	closeSerial := make(chan bool, 1)
 	defer func() { closeSerial <- true }()
-	go serialFlush(serialPort, serialBuffer, closeSerial)
+	go serialFlush(serialPort, serialSend, closeSerial)
 
 	// Await connections
 	log.Println("Waiting for TCP connection...")
@@ -67,7 +74,7 @@ func startServer() {
 		}
 		connectedClients += 1
 		log.Printf("TCP connection established. %d Connected clients right now\n", connectedClients)
-		go handleConnection(conn, serialBuffer)
+		go handleConnection(conn, serialSend)
 	}
 }
 
@@ -91,13 +98,14 @@ func displayAvailablePorts() {
 	}
 }
 
-func handleConnection(con net.Conn, serialBuffer chan []byte) {
+func handleConnection(con net.Conn, serialSend chan CommandToSerial) {
 	defer con.Close()
 	pongbytes := []byte("pong")
 
 	readTimeout := 30 * time.Second
 	// start the ping sender to make sure the read timeout never happens
 	go ping_sender(con, readTimeout)
+	responseChan := make(chan []byte)
 
 	for {
 		con.SetReadDeadline(time.Now().Add(readTimeout))
@@ -117,7 +125,10 @@ func handleConnection(con net.Conn, serialBuffer chan []byte) {
 			fmt.Printf("[%s] Received Pong\n", con.RemoteAddr().String())
 		} else {
 			fmt.Println("Received Data", string(buffer))
-			serialBuffer <- buffer
+			serialSend <- CommandToSerial{buffer, responseChan}
+			buffer = <-responseChan
+			fmt.Println("Respond Data:", string(buffer))
+			con.Write(buffer)
 		}
 	}
 }
@@ -129,14 +140,17 @@ func ping_sender(con net.Conn, timeout time.Duration) {
 	}
 }
 
-func serialFlush(serial serial.Port, sendBuffer chan []byte, done chan bool) {
+func serialFlush(serial serial.Port, sendBuffer chan CommandToSerial, done chan bool) {
 	for {
 		select {
-		case msg := <-sendBuffer:
-			_, err := serial.Write(msg)
+		case command := <-sendBuffer:
+			_, err := serial.Write(command.message)
 			if err != nil {
 				log.Printf("Error forwarding data from serial to TCP: %v\n", err)
 			}
+			responseBuffer := make([]byte, 128)
+			serial.Read(responseBuffer)
+			command.responseChan <- responseBuffer
 		case <-done:
 			return
 		}
